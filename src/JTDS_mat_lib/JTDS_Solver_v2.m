@@ -149,6 +149,19 @@ function [Priors, Mu, Sigma, As, latent_mapping] = JTDS_Solver_v2(Data, robotpla
     if ~(isfield(options, 'GMM_use_Qd'))
         options.GMM_use_Qd = false;
     end
+
+    % if ~(isfield(options, 'learn_task_space'))
+    %     options.learn_task_space = false;
+    % end
+    % %if ~(isfield(options, 'task_space_weight'))
+    % %    options.task_space_weight = 0.5; % Default equal weighting between joint and task space
+    % %end
+    % if ~(isfield(options, 'use_null_space'))
+    %     options.use_null_space = false; % Default to weighted sum approach
+    % end
+    % %if ~(isfield(options, 'null_space_direct'))
+    % %    options.null_space_direct = false; % Default to A matrix optimization in null space
+    % %end
     if options.GMM_use_Qd && ~(strcmp(options.latent_mapping_type, 'PCA') || strcmp(options.latent_mapping_type, 'None'))
         error('Cant use Qd in GMM unless using linear transform because cant marginalize away Qd for nonlinear methods')
     end
@@ -435,6 +448,166 @@ function [Priors, Mu, Sigma, As, latent_mapping] = JTDS_Solver_v2(Data, robotpla
         Qd_total_error = Qd_total_error + (error_col' * error_col);
     end
     Objective = Qd_total_error;
+    
+    % Added by Nanami ------------------------------------------------
+    % Calculate task space error if requested
+    if isfield(options, 'learn_task_space') && options.learn_task_space
+        if options.verbose
+           disp('Calculating task space error.');
+        end
+
+        % Determine task space dimensions
+        if options.orientation_flag == 1
+            task_dim = 6; % Position + orientation
+        else
+            task_dim = 3; % Position only
+        end
+
+        if options.use_null_space
+            % NULL SPACE PROJECTION APPROACH - HIERARCHICAL OPTIMIZATION
+            if options.verbose
+                disp('Using null space projection for hierarchical control...');
+            end
+
+            % APPROACH: Prioritize task space, optimize joint space in null space
+            % 1. Task space has priority - minimize task space error
+            % 2. Joint space optimization happens only in the null space of the task
+
+            task_space_error = 0;
+            null_space_error = 0;
+
+            % Compute predicted task space velocities
+            Xd_approximated = sdpvar(task_dim, n, 'full'); % TODO: Check is this is correct
+            for i = 1:n
+                q = Q(:, i);
+                % Compute Jacobian at current configuration
+                J = robotplant.robot.jacob0(q);
+                if options.orientation_flag == 1
+                    J_task = J(1:6, :);
+                else
+                    J_task = J(1:3, :);
+                end
+                % Transform joint velocities to task space
+                Xd_approximated(:, i) = J_task * Qd_approximated(:, i);
+            end
+
+            % True task space velocities from demonstrations
+            Xd_true = zeros(task_dim, n);
+            for i = 1:n
+                q = Q(:, i);
+                J = robotplant.robot.jacob0(q);
+                if options.orientation_flag == 1
+                    J_task = J(1:6, :);
+                else
+                    J_task = J(1:3, :);
+                end
+                Xd_true(:, i) = J_task * Qd(:, i);
+            end
+
+            % Primary objective: Task space error (high priority)
+            Xd_error = Xd_approximated - Xd_true;
+            for i = 1:n
+                error_col = Xd_error(:, i);
+                task_space_error = task_space_error + (error_col' * error_col);
+            end
+
+            % Secondary objective: Joint space error projected into null space
+            for i = 1:n
+                q = Q(:, i);
+                J = robotplant.robot.jacob0(q);
+                if options.orientation_flag == 1
+                    J_task = J(1:6, :);
+                else
+                    J_task = J(1:3, :);
+                end
+
+                % Compute null space projector
+                J_pinv = pinv(J_task);
+                N = eye(dimq) - J_pinv * J_task;  % Null space projector
+
+                % Project joint velocity error into null space
+                joint_error = Qd_approximated(:, i) - Qd(:, i);
+                null_space_joint_error = N * joint_error;
+                null_space_error = null_space_error + (null_space_joint_error' * null_space_joint_error);
+            end
+
+            % Hierarchical objective: Task space primary, null space secondary
+            % Use small weight for null space to ensure task space dominates
+            task_priority_weight = 7;  % Make task space much more important
+            null_space_weight = 3;
+
+            Objective = task_priority_weight * task_space_error + null_space_weight * null_space_error;
+
+            if options.verbose
+                fprintf('=== NULL SPACE HIERARCHICAL OPTIMIZATION ===\n');
+                fprintf('Task space dimensions: %d (orientation_flag=%d)\n', task_dim, options.orientation_flag);
+                fprintf('Task priority weight: %.0f, Null space weight: %.0f\n', task_priority_weight, null_space_weight);
+                fprintf('This ensures task space is satisfied first, joint optimization happens in null space\n');
+            end
+
+        else
+            % ORIGINAL WEIGHTED SUM APPROACH
+            % Compute predicted task space velocities
+            Xd_approximated = sdpvar(task_dim, n, 'full');
+            for i = 1:n
+                q = Q(:, i);
+                % Compute Jacobian at current configuration
+                J = robotplant.robot.jacob0(q);
+                if options.orientation_flag == 1
+                    % Use full 6D Jacobian for position + orientation
+                    J_task = J(1:6, :);
+                else
+                    % Use only position part of Jacobian
+                    J_task = J(1:3, :);
+                end
+                % Transform joint velocities to task space
+                Xd_approximated(:, i) = J_task * Qd_approximated(:, i);
+            end
+
+            % True task space velocities from demonstrations
+            Xd_true = sdpvar(task_dim, n, 'full');
+            for i = 1:n
+                q = Q(:, i);
+                J = robotplant.robot.jacob0(q);
+                if options.orientation_flag == 1
+                    J_task = J(1:6, :);
+                else
+                    J_task = J(1:3, :);
+                end
+                Xd_true(:, i) = J_task * Qd(:, i);
+            end
+
+            % Task space error
+            Xd_error = Xd_approximated - Xd_true;
+            Xd_total_error = 0;
+            for i = 1:n
+                error_col = Xd_error(:, i);
+                Xd_total_error = Xd_total_error + (error_col' * error_col);
+            end
+
+            % Combined objective with weighting
+            if ~isfield(options, 'task_space_weight')
+                options.task_space_weight = 0.5; % Default equal weighting
+            end
+
+            % DIAGNOSTIC: Print error magnitudes for analysis
+            if options.verbose
+                fprintf('=== MULTI-OBJECTIVE DIAGNOSTIC ===\n');
+                fprintf('Joint space error magnitude: %f\n', value(Qd_total_error));
+                fprintf('Task space error magnitude: %f\n', value(Xd_total_error));
+                fprintf('Error ratio (Task/Joint): %f\n', value(Xd_total_error)/value(Qd_total_error));
+                fprintf('Joint space weight: %f, Task space weight: %f\n', 1 - options.task_space_weight, options.task_space_weight);
+                fprintf('Weighted joint contribution: %f\n', (1 - options.task_space_weight) * value(Qd_total_error));
+                fprintf('Weighted task contribution: %f\n', options.task_space_weight * value(Xd_total_error));
+                fprintf('Task space dimensions: %d (orientation_flag=%d)\n', task_dim, options.orientation_flag);
+            end
+
+            Objective = (1 - options.task_space_weight) * Qd_total_error + options.task_space_weight * Xd_total_error;
+        end
+    else
+        Objective = Qd_total_error;
+    end
+    % ---------------------------------------------------------------------
     
     % Now minimize this erro to find a best-fitting set of behavior
     % matrices

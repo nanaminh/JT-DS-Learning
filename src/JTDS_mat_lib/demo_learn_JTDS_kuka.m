@@ -1,12 +1,60 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%     Learning JTDS Models (including orientation) on Different Datasets     %%                                                       %%
+%%     Learning JTDS Models (including orientation) on Different Datasets     %%
+%%     NEW: Joint+Task Space Multi-Objective Learning with Multiple Approaches%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+% This demo supports multiple learning approaches for JTDS:
+%
+% OPTIONS TO SET (in STEP 2):
+%
+% 1. APPROACH SELECTION:
+%    - options.learn_task_space: Enable task space learning (true/false)
+%    - options.use_null_space: Use null space projection (true) or weighted sum (false)
+%    - options.task_space_weight: Weight for task space (0.0 to 1.0, only for weighted sum)
+%    - options.null_space_direct: Direct null space following (true/false, advanced)
+%
+% 2. COMPARISON MODE:
+%    - run_comparison: Compare all approaches (true) or run single approach (false)
+%
+% AVAILABLE APPROACHES:
+%
+% 1. Joint Space Only:
+%    - learn_task_space = false
+%    - Learns only joint space dynamics, ignores task space
+%    - Good for: Joint angle smoothness, simple problems
+%
+% 2. Weighted Sum (Multi-objective):
+%    - learn_task_space = true, use_null_space = false
+%    - Minimizes: (1-w)*J_joint + w*J_task
+%    - Good for: Balanced joint/task performance
+%
+% 3. Null Space Projection:
+%    - learn_task_space = true, use_null_space = true, null_space_direct = false
+%    - Task space primary, joint space projected to null space
+%    - Good for: Task accuracy with joint optimization in redundant space
+%
+% 4. Direct Null Space Following (Advanced):
+%    - learn_task_space = true, use_null_space = true, null_space_direct = true
+%    - Directly learns null space trajectories
+%    - Good for: Explicit null space behavior modeling
+%
+% USAGE EXAMPLES:
+% - For presentation comparison: Set run_comparison = true
+% - For specific approach: Set run_comparison = false, configure options above
+% - For task accuracy: Use approach 3 (null space projection)
+% - For joint smoothness: Use approach 1 (joint space only) or 2 with low weight
+
 
 %% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% STEP 1: Load and Process dataset %
 %%% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 clear all; close all; clc;
+
+% Set random seed for reproducible results
+% rng(12345, 'twister');  % Use a fixed seed
+% fprintf('Random seed set to 12345 for reproducible results\n');
+
 do_plots  = 1;
 data_path = '../../Data/mat/'; % <-Insert path to datasets folder here
 choosen_dataset = 'back'; % Options: 'back','fore','pour','pour_obst','foot','singularity';
@@ -74,7 +122,7 @@ end
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 % Choose Lower-Dimensional Mapping Technique
-mapping = {'PCA'}; % 'None', 'PCA', 'KPCA'
+mapping = {'None'}; % 'None', 'PCA', 'KPCA'
 
 %%% Learning options %%%
 options = [];
@@ -102,6 +150,14 @@ options.plot_BIC = 0;
 % Optimization options 
 options.learn_with_bounds = false;
 options.verbose = true;
+
+% Task space learning options
+options.learn_task_space = false;        % Enable joint+task space learning
+options.task_space_weight = 0.3;        % weight for learning task space 
+options.use_null_space = true;         % Use weighted sum (false) or null space projection (true) 
+
+% Comparison options
+run_comparison = false;                  % Set to true to compare all approaches, false to run only chosen approach 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% DH parameters for the KUKA LWR 4+ robot %%%
@@ -163,9 +219,97 @@ fprintf('Using %s mapping, got prediction RMSE on training: %d \n', mapping_name
 rmse_test = mean(trajectory_error(motion_generator, Data_test(1:dimq, :), Data_test(dimq+1:2*dimq, :), Data_test(2*dimq+1:end, :),options.orientation_flag));
 fprintf('Using %s mapping, got prediction RMSE on testing: %d \n', mapping_name, rmse_test);
 
-%% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%    STEP 4:  Plot Lower-Dimensional Embedding and Synergies (Only works with PCA)   %%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%    STEP 3.5: Compare Different Learning Approaches         %%
+%% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+if run_comparison
+    fprintf('\n=== RUNNING COMPARISON OF ALL APPROACHES ===\n');
+
+    % 1. Joint-space-only model
+    fprintf('\n=== Training joint-space-only model ===\n');
+    options_joint_only = options;
+    options_joint_only.learn_task_space = false;
+    [Priors_joint, Mu_joint, Sigma_joint, As_joint, latent_mapping_joint] = JTDS_Solver_v2(Data_train, robotplant, options_joint_only);
+    motion_generator_joint = MotionGenerator(robotplant, Mu_joint, Sigma_joint, Priors_joint, As_joint, latent_mapping_joint);
+
+    % 2. Weighted sum approach (current multi-objective)
+    fprintf('\n=== Training weighted sum model ===\n');
+    options_weighted = options;
+    options_weighted.use_null_space = false;
+    [Priors_weighted, Mu_weighted, Sigma_weighted, As_weighted, latent_mapping_weighted] = JTDS_Solver_v2(Data_train, robotplant, options_weighted);
+    motion_generator_weighted = MotionGenerator(robotplant, Mu_weighted, Sigma_weighted, Priors_weighted, As_weighted, latent_mapping_weighted);
+
+    % 3. Null space projection approach
+    fprintf('\n=== Training null space projection model ===\n');
+    options_nullspace = options;
+    options_nullspace.use_null_space = true;
+    options_nullspace.null_space_direct = false;  % Use the stable approach
+    [Priors_nullspace, Mu_nullspace, Sigma_nullspace, As_nullspace, latent_mapping_nullspace] = JTDS_Solver_v2(Data_train, robotplant, options_nullspace);
+    motion_generator_nullspace = MotionGenerator(robotplant, Mu_nullspace, Sigma_nullspace, Priors_nullspace, As_nullspace, latent_mapping_nullspace);
+
+    % Compare RMSE on training data
+    rmse_train_joint = mean(trajectory_error(motion_generator_joint, Data_train(1:dimq, :), Data_train(dimq+1:2*dimq, :), Data_train(2*dimq+1:end, :),options.orientation_flag));
+    rmse_train_weighted = mean(trajectory_error(motion_generator_weighted, Data_train(1:dimq, :), Data_train(dimq+1:2*dimq, :), Data_train(2*dimq+1:end, :),options.orientation_flag));
+    rmse_train_nullspace = mean(trajectory_error(motion_generator_nullspace, Data_train(1:dimq, :), Data_train(dimq+1:2*dimq, :), Data_train(2*dimq+1:end, :),options.orientation_flag));
+
+    % Compare RMSE on testing data
+    rmse_test_joint = mean(trajectory_error(motion_generator_joint, Data_test(1:dimq, :), Data_test(dimq+1:2*dimq, :), Data_test(2*dimq+1:end, :),options.orientation_flag));
+    rmse_test_weighted = mean(trajectory_error(motion_generator_weighted, Data_test(1:dimq, :), Data_test(dimq+1:2*dimq, :), Data_test(2*dimq+1:end, :),options.orientation_flag));
+    rmse_test_nullspace = mean(trajectory_error(motion_generator_nullspace, Data_test(1:dimq, :), Data_test(dimq+1:2*dimq, :), Data_test(2*dimq+1:end, :),options.orientation_flag));
+
+    fprintf('\n=== COMPARISON RESULTS ===\n');
+    fprintf('Joint Space Only:\n');
+    fprintf('  Training RMSE: %.6f\n', rmse_train_joint);
+    fprintf('  Testing RMSE:  %.6f\n', rmse_test_joint);
+    fprintf('Weighted Sum (w=%.1f):\n', options.task_space_weight);
+    fprintf('  Training RMSE: %.6f\n', rmse_train_weighted);
+    fprintf('  Testing RMSE:  %.6f\n', rmse_test_weighted);
+    fprintf('Null Space Projection:\n');
+    fprintf('  Training RMSE: %.6f\n', rmse_train_nullspace);
+    fprintf('  Testing RMSE:  %.6f\n', rmse_test_nullspace);
+
+    % Use the null space model as the main model for further analysis
+    motion_generator = motion_generator_nullspace;
+    Priors = Priors_nullspace;
+    Mu = Mu_nullspace;
+    Sigma = Sigma_nullspace;
+    As = As_nullspace;
+    latent_mapping = latent_mapping_nullspace;
+
+    % Store all generators for later plotting
+    motion_generator_comparison = {motion_generator_joint, motion_generator_weighted, motion_generator_nullspace};
+    approach_names = {'Joint Only', 'Weighted Sum', 'Null Space'};
+
+else
+    fprintf('\n=== RUNNING SINGLE APPROACH ===\n');
+    % Determine which approach is being used
+    if ~options.learn_task_space
+        fprintf('Using Approach 1: Joint Space Only\n');
+        approach_name = 'Joint Space Only';
+    elseif options.learn_task_space && ~options.use_null_space
+        fprintf('Using Approach 2: Weighted Sum (w=%.1f)\n', options.task_space_weight);
+        approach_name = sprintf('Weighted Sum (w=%.1f)', options.task_space_weight);
+    elseif options.learn_task_space && options.use_null_space
+        if isfield(options, 'null_space_direct') && options.null_space_direct
+            fprintf('Using Approach 4: Direct Null Space Trajectory Following\n');
+            approach_name = 'Direct Null Space';
+        else
+            fprintf('Using Approach 3: Null Space Projection\n');
+            approach_name = 'Null Space Projection';
+        end
+    end
+
+    fprintf('Single approach training completed. RMSE: %.6f (train), %.6f (test)\n', rmse_train, rmse_test);
+
+    % For plotting consistency, create single-element arrays
+    motion_generator_comparison = {motion_generator};
+    approach_names = {approach_name};
+end
+
+%% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%    STEP 4:  Plot Lower-Dimensional Embedding and Synergies   %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 if strcmp('PCA',latent_mapping.name)
 % Extract Lower Dimensional Embedding of Demonstrations
 figure('Color',[1 1 1])  
@@ -210,11 +354,12 @@ if pca_dim == 3
 end
 
 end
+
 %% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%   STEP 5: If you are happy with the results, export the model       %%
 %%        for execution with the rtk-DS cpp class                      %%
 %% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% UNCOMMENT IF YOU WANT TO STORE THE VALUES!!
+
 model_dir = strcat('./learned_JTDS_models/',choosen_dataset);
 mkdir(model_dir); 
 cd(model_dir)
