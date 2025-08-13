@@ -1,5 +1,40 @@
 # Augmented Joint-space Task-oriented Dynamical Systems (JT-DS) Training Library
 
+--- 
+## Edit made by nanaminh for the Chalmers Summer course 
+During the course "Learning and Control for Adaptive and Reactive Robots" at Chalmers University of Technology, I extended this JT-DS learning library to learn task space trajectrory + joint space trajectory. 
+
+The main structure is implemented in *src/JTDS_mat_lib/demo_learn_JTDS_kuka.m*. Three approaches implemented and can be switched by changing option variables. ]
+### Approach 1: Joint Space Only (Original JT-DS)
+```matlab
+options.learn_task_space = false;
+```
+### Approach 2: Weighted Sum 
+```matlab
+options.learn_task_space = true;
+options.use_null_space = false;
+options.task_space_weight = 0.8;  % Recommended: 0.8 (range: 0.0 to 1.0)
+```
+This approach minimizes the weighted sum of the task space and joint space objective. (1-w)\*J_joint + w\*J_task
+
+### Aporoach 3: Hierachical Task-priority
+```matlab
+options.learn_task_space = true;
+options.use_null_space = true;
+options.null_space_mapping = false;
+```
+This approach sets task space as primary objective, and joint space preferences projected to null space
+
+### Approach 4: Task Space LPV-DS with Null Space Mapping
+```matlab
+options.learn_task_space = true;
+options.use_null_space = true;
+options.null_space_mapping = true;
+```
+This approach learns separate mapping from task space to null space behaviors.
+*src/JTDS_mat_lib/JTDS_Solver_v3.m* and *src/JTDS_mat_lib/model/MotionGeneratorV3.m* are used in this appraoch instead of *src/JTDS_mat_lib/JTDS_Solver_v2.m* and *src/JTDS_mat_lib/model/MotionGenerator.m* used in other three approaches above.
+
+--- 
 ## 1. Introduction
 The following library provides a framework for learning the parameters of a Joint-space Task-directed Dynamical System. The training component of the algorithm is primary written in MATLAB. The parameters of the model can then be exported, and imported to [the C++ code](https://github.com/epfl-lasa/JT-DS-lib) to run the learned JT-DS on a real robot.
 
