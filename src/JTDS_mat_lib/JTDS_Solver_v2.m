@@ -477,7 +477,7 @@ function [Priors, Mu, Sigma, As, latent_mapping] = JTDS_Solver_v2(Data, robotpla
             null_space_error = 0;
 
             % Compute predicted task space velocities
-            Xd_approximated = sdpvar(task_dim, n, 'full'); % TODO: Check is this is correct
+            Xd_approximated = sdpvar(task_dim, n, 'full'); % TODO: Check if this is correct
             for i = 1:n
                 q = Q(:, i);
                 % Compute Jacobian at current configuration
@@ -533,8 +533,8 @@ function [Priors, Mu, Sigma, As, latent_mapping] = JTDS_Solver_v2(Data, robotpla
 
             % Hierarchical objective: Task space primary, null space secondary
             % Use small weight for null space to ensure task space dominates
-            task_priority_weight = 7;  % Make task space much more important
-            null_space_weight = 3;
+            task_priority_weight = 100;  % Make task space much more important
+            null_space_weight = 1;
 
             Objective = task_priority_weight * task_space_error + null_space_weight * null_space_error;
 
