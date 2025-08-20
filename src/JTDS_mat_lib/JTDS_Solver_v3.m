@@ -45,19 +45,30 @@ end
 task_dim = size(Xt, 1);
 
 % Set default options for LPV-DS estimation
-if ~isfield(options, 'lpv_est_options')
-    est_options = [];
-    est_options.type             = 0;   % GMM Estimation Algorithm Type 
-    est_options.maxK             = 10;  % Maximum Gaussians for Type 1
-    est_options.samplerIter      = 30;  % Maximum Sampler Iterations
-    est_options.do_plots         = 0;   % Do not plot estimation statistics
-    est_options.sub_sample       = 1;   % Sub-sampling factor
-    est_options.estimate_l       = 1;   % Estimate lengthscale
-    est_options.l_sensitivity    = 2;   % Lengthscale sensitivity
-    est_options.length_scale     = []; 
+% if ~isfield(options, 'lpv_est_options')
+est_options = [];
+% 0: Physically-Consistent CRP-GMM (Collapsed Gibbs Sampler)
+% 1: GMM-EM Model Selection via BIC
+% 2: CRP-GMM (Collapsed Gibbs Sampler)
+est_options.type             = 0;   % GMM Estimation Algorithm Type (
+est_options.maxK             = 10;  % Maximum Gaussians for Type 1
+est_options.samplerIter      = 50;  % Maximum Sampler Iterations
+est_options.do_plots         = 1;   % Do not plot estimation statistics
+est_options.estimate_l       = 1;   % Estimate lengthscale
+est_options.l_sensitivity    = 2;   % Lengthscale sensitivity
+est_options.length_scale     = []; 
+
+% Decide subsample factor from the numbers of data
+if n > 1500
+    est_options.sub_sample       = 8;
+elseif n > 1000
+    est_options.sub_sample       = 4;
 else
-    est_options = options.lpv_est_options;
+    est_options.sub_sample       = 2;
 end
+% else
+%     est_options = options.lpv_est_options;
+% end
 
 if options.verbose
     disp('Step 1: Fitting GMM to task space data...');
@@ -81,7 +92,7 @@ if options.adjust_covariances
     if task_dim == 2
         tot_dilation_factor = 1; rel_dilation_fact = 0.2;
     elseif task_dim == 3
-        tot_dilation_factor = 1; rel_dilation_fact = 0.5;
+        tot_dilation_factor = 1; rel_dilation_fact = 0.75;
     elseif task_dim == 6
         tot_dilation_factor = 1; rel_dilation_fact = 0.75;
     else
@@ -95,16 +106,23 @@ if options.verbose
     disp('Step 1: Learning LPV-DS dynamics matrices...');
 end
 
-% Set up LPV-DS optimization options
-if ~isfield(options, 'constr_type')
-    options.constr_type = 2;  % 0:'convex', 1:'non-convex', 2:'non-convex with P'
-end
-if ~isfield(options, 'init_cvx')
-    options.init_cvx = 1;
-end
+%  Visualize Gaussian Components and labels on clustered trajectories 
+% % Extract Cluster Labels
+% [~, est_labels] =  my_gmm_cluster(Xd, ds_gmm_task.Priors, ds_gmm_task.Mu, ds_gmm_task.Sigma, 'hard', []);
+% 
+% % Visualize Estimated Parameters
+% visualizeEstimatedGMM(Xd, ds_gmm_task.Priors, ds_gmm_task.Mu, ds_gmm_task.Sigma, est_labels, est_options);
+% title('GMM PDF contour ($\theta_{\gamma}=\{\pi_k,\mu^k,\Sigma^k\}$). Initial Estimate','Interpreter','LaTex');
 
-constr_type = options.constr_type;
-init_cvx = options.init_cvx;
+% Set up LPV-DS optimization options
+constr_type = 1;  % 0:'convex':     A' + A < 0 (Same as SEDS, convex)
+                  % 1:'non-convex': A'P + PA < 0 (Estimate P, nonconvex)
+                  % 2:'non-convex': A'P + PA < Q (Pre-estimates P, Q <= -eps*I explicitly constrained) 
+init_cvx = 1;     % 0/1: initialize non-cvx problem with cvx solution, normally this is not needed
+                  % but for some datasets with lots of points or highly non-linear it helps the 
+                  % non-convex optimization converge faster. However, in some cases it might  
+                  % bias the non-cvx problem too much and reduce
+                  % reproduction accuracy.
 
 % Define attractor in task space (assumed to be target position)
 if size(Xt, 2) > 0
@@ -117,7 +135,7 @@ end
 if constr_type == 0 || constr_type == 1
     P_opt = eye(task_dim);
 else
-    % Prepare data for P-matrix learning (shift to attractor)
+    % Prepare data for P-matrix learning (shift the attractor to the origin)
     TaskData_shifted = [Xt - repmat(att_task, 1, n); Xd];
     [Vxf] = learn_wsaqf(TaskData_shifted);
     P_opt = Vxf.P;
@@ -247,3 +265,14 @@ end
 %   q_null_desired = mean of conditional distribution p(q_null | x_current)
 
 end
+
+%% THE CODE BELOW IS FOR DEBUGGING %%%
+
+%  Visualize Gaussian Components and labels on clustered trajectories 
+% Extract Cluster Labels
+% [~, est_labels] =  my_gmm_cluster(Xd, ds_gmm_task.Priors, ds_gmm_task.Mu, ds_gmm_task.Sigma, 'hard', []);
+% 
+% % Visualize Estimated Parameters
+% visualizeEstimatedGMM(Xd, ds_gmm_task.Priors, ds_gmm_task.Mu, ds_gmm_task.Sigma, est_labels, est_options);
+% title('GMM PDF contour ($\theta_{\gamma}=\{\pi_k,\mu^k,\Sigma^k\}$). Initial Estimate','Interpreter','LaTex');
+% %%% ----------------------------------------------------
